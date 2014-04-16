@@ -1,0 +1,116 @@
+#!/bin/bash
+#
+# Make Raspberry Pi SD card image [buildroot]
+#
+# ZoomZoomLuke <zoomzoomluke@gmail.com>
+# Thanks to: Guillermo A. Amaral B. <g@maral.me> and Karoly Kasza @k_kasza (nutcom.hu)
+#
+
+#Image filename to be created
+IMGF="rpi-buildroot.img"
+
+#Image size in megs to be created
+#Note: FAT partition will be 32M - edit after fdisk line if needed
+IMGS="200"
+
+OUTPUT_PREFIX=""
+
+section() {
+	sync
+	echo "*****************************************************************************************"
+	echo "> ${*}"
+	echo "*****************************************************************************************"
+	sleep 1
+}
+
+#Check error code, exit if needed
+retexit() {
+if [ $1 -ne 0 ]; then
+	echo $2
+	echo $SEP
+	exit $1
+fi
+}
+
+# root privilege check
+
+if [ ${EUID} -ne 0 ]; then
+	echo "${0} requires root privileges in order to work."
+	exit 0
+fi
+
+# sanity check
+
+if [ ! -d "images/boot" ] || [ ! -f "images/rootfs.tar" ]; then
+	if [ -d "output/images/boot" ] && [ -f "output/images/rootfs.tar" ]; then
+		OUTPUT_PREFIX="output/"
+	else
+		echo "Didn't find boot and/or rootfs.tar! ABORT."
+		exit 1
+	fi
+fi
+
+#create image and 2 partitions
+echo "Creating image..."
+dd if=/dev/zero of=$IMGF bs=1M count=$IMGS >/dev/null 2>&1
+retexit $? "Cannot create image $IMGF!"
+losetup /dev/loop0 $IMGF
+retexit $? "Loop device setup failed!"
+fdisk /dev/loop0 >/dev/null 2>&1 <<EOF
+n
+p
+1
+
++32M
+t
+c
+n
+p
+2
+
+
+w
+q
+EOF
+partx -a /dev/loop0
+retexit $? "Loop partition setup failed!"
+mkfs.vfat -I /dev/loop0p1 >/dev/null 2>&1
+retexit $? "FAT filesystem creation failed!"
+mkfs.ext4 /dev/loop0p2 >/dev/null 2>&1
+retexit $? "EXT4 filesystem creation failed!"
+
+#mount partitions
+mkdir -p p1 p2
+retexit $? "Directory creation failed!"
+mount /dev/loop0p1 p1
+retexit $? "Mount failed!"
+mount /dev/loop0p2 p2
+retexit $? "Mount failed!"
+
+# fill boot
+
+section "Populating boot partition..."
+cp -v ${OUTPUT_PREFIX}images/boot/* p1/
+
+# fill rootfs
+
+section "Populating rootfs partition..."
+tar -vxpsf ${OUTPUT_PREFIX}images/rootfs.tar -C p2/
+
+#unmount
+
+section "Unmounting loopback filesystem"
+umount p1
+retexit $? "Unmount failed!"
+umount p2
+retexit $? "Unmount failed!"
+rmdir p1 p2
+partx -d /dev/loop0
+losetup -d /dev/loop0
+
+section "Finished!"
+MD5=`md5sum $IMGF | cut -d" " -f1`
+echo "Image file $IMGF ready!"
+echo "MD5SUM: $MD5"
+
+exit 0
